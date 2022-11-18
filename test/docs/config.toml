@@ -1,0 +1,13 @@
+[vanilla-mc]
+cmd-exec-dir = "/home/photovoltex/Repositories/spawn-child-rs/process/" # has to be a full path
+cmd-path = "/usr/lib/jvm/java-17-openjdk/bin/java"
+cmd-args = [ "-Xmx1024M", "-Xms1024M", "-jar", "minecraft_server.jar", "nogui" ]
+[vanilla-mc.startup]
+cmd = "???"
+time-to-wait = 10 # time to wait after command execution, or stdout finish
+wait-for-stdout = true # if true waits for the stdout to finish befor counting the time
+# remainings are slash-commands
+[vanilla-mc.slash-commands]
+start = { description = "Starts the vanilla minecraft server." }
+stop = { description = "Stops the vanilla minecraft server.", stdin_cmd = "stop" }
+restart = { description = "Restarts the vanilla minecraft server." }
