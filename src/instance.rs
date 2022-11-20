@@ -8,66 +8,26 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
 
-#[derive(Default, Debug)]
-pub struct ExternalCommandBuilder {
-    cmd: String,
-    args: Vec<String>,
-    log_dir: Option<String>,
-    wait_for_stdout_timeout: bool,
-    time_to_wait: u64,
-}
+use crate::config::Instance;
 
-impl Display for ExternalCommandBuilder {
+impl Display for Instance {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "[{} {}]", self.cmd, self.args.join(" "))
+        write!(f, "[{} {}]", self.cmd_path, self.cmd_args.join(" "))
     }
 }
 
-impl ExternalCommandBuilder {
-    pub fn new(cmd: String) -> ExternalCommandBuilder {
-        ExternalCommandBuilder {
-            cmd,
-            args: Vec::new(),
-            log_dir: None,
-            wait_for_stdout_timeout: false,
-            time_to_wait: 30,
-        }
-    }
-
-    pub fn set_args(mut self, mut args: Vec<String>) -> Self {
-        self.args.append(&mut args);
-        self
-    }
-
+impl Instance {
     pub fn set_dir(self, dir: String) -> Result<Self, std::io::Error> {
         match std::env::set_current_dir(Path::new(&dir)) {
-            Ok(_) => {
-                Ok(self)
-            }
+            Ok(_) => Ok(self),
             Err(err) => Err(err),
         }
     }
 
-    pub fn set_log_dir(mut self, dir: String) -> Self {
-        self.log_dir = Some(dir);
-        // todo: do something more here, logger required, or something else
-        self
-    }
-
-    pub fn set_wait_for_stdout(mut self, should_wait: bool) -> Self {
-        self.wait_for_stdout_timeout = should_wait;
-        self
-    }
-
-    pub fn set_time_to_wait(mut self, time: u64) -> Self {
-        self.time_to_wait = time;
-        self
-    }
-
     pub fn run(&self) -> Result<(), String> {
         // start child process
-        let mut child = Command::new(self.cmd.clone())
-            .args(self.args.clone())
+        let mut child = Command::new(self.cmd_path.clone())
+            .args(self.cmd_args.clone())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -78,7 +38,7 @@ impl ExternalCommandBuilder {
         // todo: maybe also get stderr and stream and analyze it
 
         let mut now: Instant = Instant::now();
-        let mut last_elapsed_time = now.elapsed().as_secs();
+        // let mut last_elapsed_time = now.elapsed().as_secs();
 
         loop {
             if let Ok(Some(status)) = child.try_wait() {
@@ -93,36 +53,33 @@ impl ExternalCommandBuilder {
             if let Ok(stream) = out.lock().as_mut() {
                 if let Ok(converted_stream) = str::from_utf8(&stream.to_owned()) {
                     if let Some(newline_position) = converted_stream.find("\n") {
-                        if self.wait_for_stdout_timeout {
-                            now = Instant::now();
-                        }
-
+                        // remove line with newline from stream
                         stream.drain(..(newline_position + 1));
 
-                        if self.log_dir.is_some() {
-                            let split = converted_stream.split("\n").collect::<Vec<&str>>();
-                            println!("{}", split.get(0).unwrap());
-                            todo!("logging isn't supported, yet")
-                        } else {
-                            let elapsed_sec = now.elapsed().as_secs();
+                        // possible position for logging the streamed lines
+                        // let split = converted_stream.split("\n").collect::<Vec<&str>>();
+                        // split.get(0).unwrap() is the last line, everything afterwards are new unfinished lines
+                        let split = converted_stream.split("\n").collect::<Vec<&str>>();
+                        println!("{}", split.get(0).unwrap());
 
-                            if last_elapsed_time.ne(&elapsed_sec) {
-                                last_elapsed_time = elapsed_sec;
-                            }
-
-                            if elapsed_sec > self.time_to_wait {
-                                match child
-                                    .stdin
-                                    .as_mut()
-                                    .expect("!stdin")
-                                    .write("stop\n".as_bytes())
-                                {
-                                    Ok(res) => println!("{}", res),
-                                    Err(err) => println!("{}", err),
-                                };
-                                todo!("execute cmd here probably")
-                            }
+                        if self.startup.wait_for_stdout {
+                            now = Instant::now();
                         }
+                    } else if now.elapsed().as_secs() > self.startup.time_to_wait {
+                        if let Err(err) = child
+                            .stdin
+                            .as_mut()
+                            .expect("!stdin")
+                            .write("stop\n".as_bytes())
+                        {
+                            println!("{}", err)
+                        };
+
+                        // todo: send bot message
+                        println!("{}", self.bot.shutdown_msg);
+
+                        // reset timer
+                        now = Instant::now();
                     }
                 }
             }
