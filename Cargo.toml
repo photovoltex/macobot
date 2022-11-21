@@ -1,5 +1,5 @@
 [package]
-name = "manager-bot-rs"
+name = "macobot"
 version = "0.1.0"
 edition = "2021"
 
@@ -12,3 +12,12 @@ toml = "0.5"
 [dependencies.serde]
 version = "1.0"
 features = ["derive"]
+
+[dependencies.serenity]
+version = "0.11.5"
+default-features = false
+features = ["client", "gateway", "rustls_backend", "model"]
+
+[dependencies.tokio]
+version = "1.0"
+features = ["macros", "rt-multi-thread"]

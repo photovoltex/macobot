@@ -10,7 +10,7 @@ pub struct SlashCommandConfig {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all(deserialize = "kebab-case"))]
 pub struct StartupConfig {
-    pub cmd: String,
+    pub msg: String,
     pub time_to_wait: u64,
     pub wait_for_stdout: bool,
 }
@@ -37,7 +37,9 @@ pub struct Instance {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all(deserialize = "kebab-case"))]
 pub struct Config {
+    pub bot_token: String,
     #[serde(flatten)]
     pub instances: HashMap<String, Instance>,
 }
