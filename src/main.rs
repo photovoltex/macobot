@@ -11,9 +11,12 @@ use crate::handler::Handler;
 
 #[tokio::main]
 async fn main() {
-    let path = env::var("CONFIG_PATH").unwrap_or(String::from("./config.toml"));
-    let cfg = Config::from_path(&path);
-    println!("{:#?}", cfg);
+    let log_cfg_path = env::var("LOG_CONFIG_PATH").unwrap_or(String::from("./log4rs.yml"));
+    log4rs::init_file(log_cfg_path, Default::default()).unwrap();
+
+    let cfg_path = env::var("CONFIG_PATH").unwrap_or(String::from("./config.toml"));
+    let cfg = Config::from_path(&cfg_path);
+    log::trace!("{:#?}", cfg);
 
     // Build our client.
     let mut client = Client::builder(cfg.bot_token.to_owned(), GatewayIntents::empty())
@@ -22,6 +25,6 @@ async fn main() {
         .expect("Error creating client");
 
     if let Err(why) = client.start().await {
-        println!("Client error: {:?}", why);
+        log::error!("Client error: {:?}", why);
     }
 }

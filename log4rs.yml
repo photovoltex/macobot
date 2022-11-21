@@ -1,0 +1,31 @@
+appenders:
+  rolling_file:
+    kind: rolling_file
+    path: log/macobot.log
+    append: true
+    encoder:
+      pattern: "{d(%Y-%m-%d %H:%M:%S)} | {({l}):5.5} | {f}:{L} — {m}{n}"
+    policy:
+      kind: compound
+      trigger:
+        kind: size
+        limit: 10 mb
+      roller:
+        kind: delete
+
+  stdout:
+    kind: console
+    target: stdout
+    tty_only: false
+    encoder:
+      pattern: "{d(%Y-%m-%d %H:%M:%S)} | {({l}):5.5} | {f}:{L} — {m}{n}"
+
+root:
+  level: warn
+  appenders:
+    - stdout
+    - rolling_file
+
+loggers:
+  macobot:
+    level: debug

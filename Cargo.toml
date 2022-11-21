@@ -8,6 +8,11 @@ edition = "2021"
 [dependencies]
 confy = "0.5.1"
 toml = "0.5"
+log = "0.4.17"
+
+[dependencies.log4rs]
+version = "1.2.0"
+features = [ "console_appender", "rolling_file_appender" ]
 
 [dependencies.serde]
 version = "1.0"

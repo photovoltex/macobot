@@ -21,7 +21,6 @@ pub enum ChannelEventsOut {
     ExecuteStdinCommandFailure(String),
     StoppedError(String),
     ProcessTimeoutFinished(String),
-    Logging(String),
 }
 
 impl Display for Instance {
@@ -37,6 +36,7 @@ impl Instance {
 
     pub fn run(
         &self,
+        name: String,
         send_out: ThreadSaveSyncSender,
     ) -> Result<SyncSender<ChannelEventsIn>, String> {
         if let Some(path) = &self.cmd_exec_dir {
@@ -63,13 +63,13 @@ impl Instance {
         let instance = self.to_owned();
 
         // todo: maybe use the handle for something
-        thread::spawn(move || {
+        thread::Builder::new().name(name).spawn(move || {
             loop {
                 let sender = send_out.lock().expect("!lock");
 
                 if let Ok(Some(status)) = child.try_wait() {
                     // todo: should be "printed" somewhere else
-                    println!("Child-Process: {} finished with: {}", instance, status);
+                    log::debug!("Child-Process: {} finished with: {}", instance, status);
                     if !status.success() {
                         sender.send(ChannelEventsOut::StoppedError(status.to_string()));
                     } else {
@@ -104,9 +104,7 @@ impl Instance {
                             // let split = converted_stream.split("\n").collect::<Vec<&str>>();
                             // split.get(0).unwrap() is the last line, everything afterwards are new unfinished lines
                             let split = converted_stream.split("\n").collect::<Vec<&str>>();
-                            sender
-                                .send(ChannelEventsOut::Logging(split.get(0).unwrap().to_string()));
-                            // println!("{}", split.get(0).unwrap());
+                            log::debug!("{}", split.get(0).unwrap());
 
                             if instance.startup.wait_for_stdout {
                                 now = Instant::now();
@@ -140,7 +138,7 @@ impl Instance {
                 let mut buf = [0];
                 match stream.read(&mut buf) {
                     Err(err) => {
-                        println!("{}] Error reading from stream: {}", line!(), err);
+                        log::error!("{}] Error reading from stream: {}", line!(), err);
                         break;
                     }
                     Ok(got) => {
@@ -149,7 +147,7 @@ impl Instance {
                         } else if got == 1 {
                             vec.lock().expect("!lock").push(buf[0])
                         } else {
-                            println!("{}] Unexpected number of bytes: {}", line!(), got);
+                            log::error!("{}] Unexpected number of bytes: {}", line!(), got);
                             break;
                         }
                     }

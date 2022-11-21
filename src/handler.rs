@@ -31,13 +31,12 @@ impl Handler {
 
         thread::spawn(move || loop {
             // todo: process events
-            match receive_out.recv() {
+            match receive_out.try_recv() {
                 Ok(ChannelEventsOut::StoppedSuccess) => todo!("StopSuccess"),
-                Ok(ChannelEventsOut::StoppedError(err)) => todo!("{err}"),
-                Ok(ChannelEventsOut::ExecuteStdinCommandFailure(err)) => todo!("{err}"),
-                Ok(ChannelEventsOut::ProcessTimeoutFinished(msg)) => todo!("{msg}"),
-                Ok(ChannelEventsOut::Logging(msg)) => println!("{msg}"),
-                Err(err) => todo!("{err}"),
+                Ok(ChannelEventsOut::StoppedError(err)) => todo!("StoppedError: {err}"),
+                Ok(ChannelEventsOut::ExecuteStdinCommandFailure(err)) => todo!("ExecuteStdinCommandFailure: {err}"),
+                Ok(ChannelEventsOut::ProcessTimeoutFinished(msg)) => todo!("ProcessTimeoutFinished: {msg}"),
+                Err(err) => {},
             };
         });
 
@@ -62,7 +61,7 @@ impl Handler {
 impl EventHandler for Handler {
     async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
         if let Interaction::ApplicationCommand(command) = interaction {
-            println!("Received command interaction: {:#?}", command);
+            log::trace!("Received command interaction: {:#?}", command);
 
             let cmd_name = command.data.name.as_str();
             let split: Vec<&str> = cmd_name.split(Handler::CMD_NAME_SEPARATOR).collect();
@@ -78,7 +77,7 @@ impl EventHandler for Handler {
                             instance.slash_commands.get(slash_cmd_name.to_owned())
                         {
                             command_response = match slash_cmd_name.trim() {
-                                "start" => match instance.run(self.sync_sender.to_owned()) {
+                                "start" => match instance.run(instance_name.to_string(), self.sync_sender.to_owned()) {
                                     Ok(channel) => {
                                         self.running_instances
                                             .lock()
@@ -107,13 +106,13 @@ impl EventHandler for Handler {
                 })
                 .await
             {
-                println!("Cannot respond to slash command: {}", why);
+                log::warn!("Cannot respond to slash command: {}", why);
             }
         }
     }
 
     async fn ready(&self, ctx: Context, ready: Ready) {
-        println!("{} is connected!", ready.user.name);
+        log::debug!("{} is connected!", ready.user.name);
 
         for (instance_name, instance) in self.cfg.instances.to_owned() {
             let guild_id = GuildId(instance.bot.server_id);
@@ -130,23 +129,16 @@ impl EventHandler for Handler {
                             .description(slash_cmd.description)
                     });
                 }
-                println!("{:#?}", commands);
+                log::trace!("{:#?}", commands);
 
                 commands
             })
             .await;
 
-            println!(
+            log::trace!(
                 "I now have the following guild slash commands: {:#?}",
                 commands
             );
         }
-
-        // let guild_command = Command::create_global_application_command(&ctx.http, |command| {
-        //     commands::wonderful_command::register(command)
-        // })
-        // .await;
-
-        // println!("I created the following global slash command: {:#?}", guild_command);
     }
 }
