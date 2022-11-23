@@ -10,7 +10,8 @@ use std::thread;
 use std::time::Instant;
 
 use crate::config::Instance;
-use crate::handler::ThreadSaveSyncSender;
+
+pub type ThreadSafeOptionalSyncSender = Arc<Mutex<Option<SyncSender<ChannelEventsOut>>>>;
 
 pub enum ChannelEventsIn {
     ExecuteStdinCommand(String),
@@ -20,7 +21,7 @@ pub enum ChannelEventsOut {
     StoppedSuccess,
     ExecuteStdinCommandFailure(String),
     StoppedError(String),
-    ProcessTimeoutFinished(String),
+    StartupTimeoutFinished(String, String),
 }
 
 impl Display for Instance {
@@ -37,12 +38,11 @@ impl Instance {
     pub fn run(
         &self,
         name: String,
-        send_out: ThreadSaveSyncSender,
+        send_out: ThreadSafeOptionalSyncSender,
     ) -> Result<SyncSender<ChannelEventsIn>, String> {
         if let Some(path) = &self.cmd_exec_dir {
             std::env::set_current_dir(Path::new(&path)).map_err(Instance::stringify_io_error)?;
         }
-
         // start child process
         let mut child = Command::new(self.cmd_path.clone())
             .args(self.cmd_args.clone())
@@ -60,20 +60,39 @@ impl Instance {
         // fixme: hard coded buffer size for SyncSender
         let (send_in, receive_in) = sync_channel::<ChannelEventsIn>(3);
 
+        let instance_name = Arc::new(name);
+        let name = instance_name.clone().to_string();
         let instance = self.to_owned();
 
-        // todo: maybe use the handle for something
-        thread::Builder::new().name(name).spawn(move || {
-            loop {
-                let sender = send_out.lock().expect("!lock");
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .thread_name(name)
+            .enable_all()
+            .build()
+            .unwrap();
 
+        // todo: maybe use the handle for something
+        rt.spawn_blocking(move || {
+            let mut reached_timeout = false;
+            let mut last_elapsed_sec = now.elapsed().as_secs();
+
+            loop {
                 if let Ok(Some(status)) = child.try_wait() {
                     // todo: should be "printed" somewhere else
                     log::debug!("Child-Process: {} finished with: {}", instance, status);
                     if !status.success() {
-                        sender.send(ChannelEventsOut::StoppedError(status.to_string()));
+                        send_out
+                            .lock()
+                            .expect("!lock")
+                            .as_ref()
+                            .unwrap()
+                            .send(ChannelEventsOut::StoppedError(status.to_string()));
                     } else {
-                        sender.send(ChannelEventsOut::StoppedSuccess);
+                        send_out
+                            .lock()
+                            .expect("!lock")
+                            .as_ref()
+                            .unwrap()
+                            .send(ChannelEventsOut::StoppedSuccess);
                     }
                 }
 
@@ -86,13 +105,15 @@ impl Instance {
                                 .expect("!stdin")
                                 .write(format!("{cmd}\n").as_bytes())
                             {
-                                sender.send(ChannelEventsOut::ExecuteStdinCommandFailure(
-                                    err.to_string(),
-                                ));
+                                send_out.lock().expect("!lock").as_ref().unwrap().send(
+                                    ChannelEventsOut::ExecuteStdinCommandFailure(err.to_string()),
+                                );
                             };
                         }
                     }
                 }
+
+                let current_elapsed = now.elapsed().as_secs();
 
                 if let Ok(stream) = out.lock().as_mut() {
                     if let Ok(converted_stream) = str::from_utf8(&stream.to_owned()) {
@@ -109,12 +130,21 @@ impl Instance {
                             if instance.startup.wait_for_stdout {
                                 now = Instant::now();
                             }
-                        } else if now.elapsed().as_secs() > instance.startup.time_to_wait {
-                            sender.send(ChannelEventsOut::ProcessTimeoutFinished(
-                                instance.startup.msg.to_owned(),
-                            ));
-                            // reset timer
-                            now = Instant::now();
+                        } else if !reached_timeout {
+                            if current_elapsed > last_elapsed_sec {
+                                last_elapsed_sec = current_elapsed;
+                                log::debug!("{current_elapsed}s");
+                            } else if current_elapsed > instance.startup.time_to_wait {
+                                send_out.lock().expect("!lock").as_ref().unwrap().send(
+                                    ChannelEventsOut::StartupTimeoutFinished(
+                                        instance_name.to_string(),
+                                        instance.startup.msg.to_owned(),
+                                    ),
+                                );
+                                // reset timer
+                                now = Instant::now();
+                                reached_timeout = true;
+                            }
                         }
                     }
                 }
@@ -132,6 +162,7 @@ impl Instance {
     {
         let out = Arc::new(Mutex::new(Vec::new()));
         let vec = out.clone();
+
         thread::Builder::new()
             .name("child_stream_to_vec".into())
             .spawn(move || loop {

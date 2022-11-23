@@ -18,7 +18,7 @@ appenders:
     target: stdout
     tty_only: false
     encoder:
-      pattern: "{d(%Y-%m-%d %H:%M:%S)} | {({l}):5.5} | {f}:{L} — {m}{n}"
+      pattern: "{d(%Y-%m-%d %H:%M:%S)} | {thread} | {({l}):5.5} | {f}:{L} — {m}{n}"
 
 root:
   level: warn

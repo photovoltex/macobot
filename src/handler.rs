@@ -1,49 +1,88 @@
 use std::collections::HashMap;
 use std::sync::mpsc::{sync_channel, SyncSender};
 use std::sync::{Arc, Mutex};
-use std::thread;
 
 use serenity::async_trait;
+use serenity::http::Http;
 use serenity::model::application::interaction::{Interaction, InteractionResponseType};
 use serenity::model::gateway::Ready;
 use serenity::model::id::GuildId;
+use serenity::model::prelude::ChannelId;
 use serenity::prelude::*;
 
 use crate::config::Config;
-use crate::instance::{self, ChannelEventsIn, ChannelEventsOut};
+use crate::instance::{ChannelEventsIn, ChannelEventsOut, ThreadSafeOptionalSyncSender};
 
-pub type ThreadSaveSyncSender = Arc<Mutex<SyncSender<ChannelEventsOut>>>;
-pub type MutableHashMap = Arc<Mutex<HashMap<String, SyncSender<ChannelEventsIn>>>>;
+pub struct ActiveInstance {
+    sender: SyncSender<ChannelEventsIn>,
+    channel: ChannelId,
+}
 
 pub struct Handler {
     cfg: Config,
-    running_instances: MutableHashMap,
-    sync_sender: ThreadSaveSyncSender,
+    active_instances: Arc<Mutex<HashMap<String, ActiveInstance>>>,
+    sync_sender: ThreadSafeOptionalSyncSender,
 }
 
 impl Handler {
     const CMD_NAME_SEPARATOR: &'static str = "_";
 
     pub fn new(cfg: Config) -> Handler {
-        let (sync_sender, receive_out) = sync_channel::<ChannelEventsOut>(3);
-
-        let sync_sender: ThreadSaveSyncSender = Arc::new(Mutex::new(sync_sender));
-
-        thread::spawn(move || loop {
-            // todo: process events
-            match receive_out.try_recv() {
-                Ok(ChannelEventsOut::StoppedSuccess) => todo!("StopSuccess"),
-                Ok(ChannelEventsOut::StoppedError(err)) => todo!("StoppedError: {err}"),
-                Ok(ChannelEventsOut::ExecuteStdinCommandFailure(err)) => todo!("ExecuteStdinCommandFailure: {err}"),
-                Ok(ChannelEventsOut::ProcessTimeoutFinished(msg)) => todo!("ProcessTimeoutFinished: {msg}"),
-                Err(err) => {},
-            };
-        });
-
         Handler {
             cfg,
-            running_instances: Arc::new(Mutex::new(HashMap::new())),
-            sync_sender,
+            active_instances: Arc::new(Mutex::new(HashMap::new())),
+            sync_sender: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    pub async fn run(&self) {
+        log::debug!("EventOut Handler is running.");
+
+        let (sync_sender, receive_out) = sync_channel::<ChannelEventsOut>(3);
+        let _ = self.sync_sender.lock().expect("!lock").insert(sync_sender);
+
+        let copied_bot_token = self.cfg.bot_token.clone();
+        let copied_active_instance = self.active_instances.clone();
+
+        let http = Arc::new(Http::new(&copied_bot_token));
+
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .thread_name("DirectMessage")
+            .build()
+            .unwrap();
+
+        loop {
+            // todo: process events
+            let received = receive_out.recv();
+            match received {
+                Ok(ChannelEventsOut::StoppedSuccess) => todo!("StopSuccess"),
+                Ok(ChannelEventsOut::StoppedError(err)) => todo!("StoppedError: {err}"),
+                Ok(ChannelEventsOut::ExecuteStdinCommandFailure(err)) => {
+                    todo!("ExecuteStdinCommandFailure: {err}")
+                }
+                Ok(ChannelEventsOut::StartupTimeoutFinished(instance_name, msg)) => {
+                    log::debug!("Startup timeout finished for {instance_name} - {msg}");
+
+                    let active_instance = copied_active_instance.clone();
+                    let async_http = http.clone();
+
+                    rt.spawn(async move {
+                        log::debug!("!plz speak");
+                        let channel = active_instance
+                            .lock()
+                            .expect("!lock")
+                            .get(&instance_name)
+                            .expect("!get")
+                            .channel;
+
+                        let res = channel
+                            .send_message(&async_http, |m| m.content(msg).tts(true))
+                            .await;
+                        println!("{:?}", res);
+                    });
+                }
+                Err(err) => todo!("Error: {err}"),
+            };
         }
     }
 
@@ -77,21 +116,39 @@ impl EventHandler for Handler {
                             instance.slash_commands.get(slash_cmd_name.to_owned())
                         {
                             command_response = match slash_cmd_name.trim() {
-                                "start" => match instance.run(instance_name.to_string(), self.sync_sender.to_owned()) {
-                                    Ok(channel) => {
-                                        self.running_instances
-                                            .lock()
-                                            .expect("!lock")
-                                            .insert(instance_name.to_string(), channel);
-                                        format!("Starting [{instance_name}]. I will send a message when the executed command finished starting.").to_string()
+                                "start" => match instance
+                                    .run(instance_name.to_string(), self.sync_sender.clone())
+                                {
+                                    Ok(sender) => {
+                                        let channel = command.channel_id;
+
+                                        self.active_instances.lock().expect("!lock").insert(
+                                            instance_name.to_string(),
+                                            ActiveInstance { sender, channel },
+                                        );
+                                        format!("Started instance: `{instance_name}`. Will send a message after command startup.").to_string()
                                     }
                                     Err(err) => err,
                                 },
                                 "stop" => {
+                                    let res = self
+                                        .active_instances
+                                        .lock()
+                                        .expect("!lock")
+                                        .get(&instance_name.to_string())
+                                        .expect("!get")
+                                        .sender
+                                        .send(ChannelEventsIn::ExecuteStdinCommand(
+                                            slash_cmd.stdin_cmd.as_ref().unwrap().to_string(),
+                                        ));
                                     // use slash_cmd.stdin_cmd here
-                                    "not implemented :(".to_string()
+                                    if res.is_err() {
+                                        res.unwrap_err().to_string()
+                                    } else {
+                                        format!("Stopped {instance_name}.").to_string()
+                                    }
                                 }
-                                _ => "not implemented :(".to_string(),
+                                _ => "not currently supported or implemented".to_string(),
                             };
                         }
                     }

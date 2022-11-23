@@ -19,9 +19,8 @@ pub struct StartupConfig {
 #[serde(rename_all(deserialize = "kebab-case"))]
 pub struct BotConfig {
     pub server_id: u64,
-    pub channel_id: u64,
-    pub thread_id: Option<u64>,
-    pub user_ids: Vec<u64>,
+    pub channel_ids: Option<Vec<u64>>,
+    pub user_ids: Option<Vec<u64>>,
     pub shutdown_msg: String,
 }
 
