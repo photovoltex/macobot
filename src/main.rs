@@ -2,7 +2,7 @@ mod config;
 mod handler;
 mod instance;
 
-use std::{env, sync::Arc};
+use std::env;
 
 use config::Config;
 use serenity::{prelude::GatewayIntents, Client};
@@ -11,41 +11,22 @@ use crate::handler::Handler;
 
 #[tokio::main]
 async fn main() {
-    let log_cfg_path = env::var("LOG_CONFIG_PATH").unwrap_or(String::from("./log4rs.yml"));
-    log4rs::init_file(log_cfg_path, Default::default()).unwrap();
+    // init logger
+    log4rs::init_file("./log4rs.yml", Default::default()).unwrap();
 
-    let cfg = match env::var("CONFIG_PATH") {
-        Ok(path) => {
-            log::debug!("CONFIG_PATH was given. Will use {path} for config initialization.");
-            Config::from_path(&path)
-        }
-        Err(_) => {
-            log::warn!(
-                "env::var CONFIG_PATH was not defined, falling back to config in current directory"
-            );
-            Config::from_path("./config.toml")
-        }
-    };
+    let cfg_path = env::var("CONFIG_PATH").unwrap_or_else(|_| String::from("./config.toml"));
+    let cfg = Config::from_path(&cfg_path);
 
     if log::max_level().ge(&log::LevelFilter::Trace) {
-        log::trace!("{:#?}", cfg);
+        log::trace!("Generated Config from {}: {:#?}", cfg_path, cfg);
     }
 
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .thread_name("ReadChannelEventsOut")
-        .build()
-        .unwrap();
-
     let client = Client::builder(&cfg.bot_token, GatewayIntents::empty());
-
-    let handler = Arc::new(Handler::new(cfg));
-    let thread_handler = handler.clone();
-
-    rt.spawn(async move { thread_handler.run().await });
+    let handler = Handler::new(cfg);
 
     // Build our client.
     let mut client = client
-        .event_handler_arc(handler)
+        .event_handler(handler)
         .await
         .expect("Error creating client");
 

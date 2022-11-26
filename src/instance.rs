@@ -1,27 +1,30 @@
 use std::fmt::Display;
 use std::io::{Read, Write};
 use std::path::Path;
-use std::process::Command;
 use std::process::Stdio;
+use std::process::{Child, Command};
 use std::str;
-use std::sync::mpsc::{sync_channel, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
 
+use tokio::sync::mpsc::{self, Receiver, Sender};
+
 use crate::config::Instance;
+use crate::handler::HandlerEvents;
 
-pub type ThreadSafeOptionalSyncSender = Arc<Mutex<Option<SyncSender<ChannelEventsOut>>>>;
-
-pub enum ChannelEventsIn {
+pub enum InstanceInEvents {
     ExecuteStdinCommand(String),
 }
 
-pub enum ChannelEventsOut {
-    StoppedSuccess,
-    ExecuteStdinCommandFailure(String),
-    StoppedError(String),
+#[derive(Debug)]
+pub enum InstanceOutEvents {
+    ChangeDirFailure,
+    Stopped,
+    StoppedWithError(String),
+    StdoutInitializingFailure,
     StartupTimeoutFinished(String, String),
+    ExecuteStdinCommandFailure(String),
 }
 
 impl Display for Instance {
@@ -30,128 +33,189 @@ impl Display for Instance {
     }
 }
 
-impl Instance {
-    fn stringify_io_error(x: std::io::Error) -> String {
-        format!("{x}")
+pub struct InstanceRunner {
+    name: String,
+    instance: Instance,
+    reached_timeout: bool,
+}
+
+impl InstanceRunner {
+    pub fn new(
+        name: String,
+        instance: Instance,
+        sender_out: Sender<HandlerEvents>,
+    ) -> Sender<InstanceInEvents> {
+        let (sender, receiver_in) = mpsc::channel::<InstanceInEvents>(5);
+
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .thread_name(&name)
+            .enable_all()
+            .build()
+            .expect(&format!(
+                "Couldn't build multithread runtime for instance [{name}]."
+            ));
+
+        let mut runner = InstanceRunner {
+            name,
+            instance,
+            reached_timeout: false,
+        };
+        rt.block_on(async {
+            let (child, stdout) = runner.spawn_child(&sender_out).await;
+            runner
+                .run_loop(child, stdout, sender_out, receiver_in)
+                .await;
+        });
+
+        sender
     }
 
-    pub fn run(
-        &self,
-        name: String,
-        send_out: ThreadSafeOptionalSyncSender,
-    ) -> Result<SyncSender<ChannelEventsIn>, String> {
-        if let Some(path) = &self.cmd_exec_dir {
-            std::env::set_current_dir(Path::new(&path)).map_err(Instance::stringify_io_error)?;
+    async fn spawn_child(&self, send_out: &Sender<HandlerEvents>) -> (Child, Arc<Mutex<Vec<u8>>>) {
+        // set path if given var is available
+        if let Some(path) = &self.instance.cmd_exec_dir {
+            if let Err(err) = std::env::set_current_dir(Path::new(&path)) {
+                if let Err(send_err) = send_out
+                    .send(HandlerEvents::InstanceOutEvent(
+                        InstanceOutEvents::ChangeDirFailure,
+                    ))
+                    .await
+                {
+                    panic!("Failed to change current directory and sending error message. Err: {err}, SendErr: {send_err}")
+                } else {
+                    panic!("Failed to change current directory. Err: {err}")
+                }
+            }
         }
+
         // start child process
-        let mut child = Command::new(self.cmd_path.clone())
-            .args(self.cmd_args.clone())
+        let mut child = Command::new(&self.instance.cmd_path)
+            .args(&self.instance.cmd_args.clone())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .expect("failed to execute child");
 
-        let out: Arc<Mutex<Vec<u8>>> =
-            Instance::child_stream_to_vec(child.stdout.take().expect("!stdout"));
         // todo: maybe also get stderr and stream and analyze it
+        let out: Arc<Mutex<Vec<u8>>> = match child.stdout.take() {
+            Some(stdout) => Self::child_stream_to_vec(stdout),
+            None => {
+                if let Err(err) = send_out
+                    .send(HandlerEvents::InstanceOutEvent(
+                        InstanceOutEvents::StdoutInitializingFailure,
+                    ))
+                    .await
+                {
+                    panic!("Couldn't retrieve stdout from spawned child and sending error message. Err: {err}")
+                } else {
+                    panic!("Couldn't retrieve stdout from spawned child.")
+                }
+            }
+        };
+
+        (child, out)
+    }
+
+    async fn run_loop(
+        &mut self,
+        child: Child,
+        stdout: Arc<Mutex<Vec<u8>>>,
+        send_out: Sender<HandlerEvents>,
+        receiver_in: Receiver<InstanceInEvents>,
+    ) {
+        let mut child = child;
+        let mut receiver = receiver_in;
 
         let mut now: Instant = Instant::now();
-        // fixme: hard coded buffer size for SyncSender
-        let (send_in, receive_in) = sync_channel::<ChannelEventsIn>(3);
+        let mut last_elapsed_sec = now.elapsed().as_secs();
 
-        let instance_name = Arc::new(name);
-        let name = instance_name.clone().to_string();
-        let instance = self.to_owned();
+        loop {
+            if let Ok(Some(status)) = child.try_wait() {
+                log::debug!("Child-Process: {} finished with: {}", self.instance, status);
 
-        let rt = tokio::runtime::Builder::new_multi_thread()
-            .thread_name(name)
-            .enable_all()
-            .build()
-            .unwrap();
+                let res = if !status.success() {
+                    send_out
+                        .send(HandlerEvents::InstanceOutEvent(
+                            InstanceOutEvents::StoppedWithError(status.to_string()),
+                        ))
+                        .await
+                } else {
+                    send_out
+                        .send(HandlerEvents::InstanceOutEvent(InstanceOutEvents::Stopped))
+                        .await
+                };
 
-        // todo: maybe use the handle for something
-        rt.spawn_blocking(move || {
-            let mut reached_timeout = false;
-            let mut last_elapsed_sec = now.elapsed().as_secs();
+                if let Err(send_err) = res {
+                    panic!(
+                        "Couldn't send stopped message to HandlerEvents. {}",
+                        send_err
+                    )
+                } else {
+                    return;
+                }
+            }
 
-            loop {
-                if let Ok(Some(status)) = child.try_wait() {
-                    // todo: should be "printed" somewhere else
-                    log::debug!("Child-Process: {} finished with: {}", instance, status);
-                    if !status.success() {
-                        send_out
-                            .lock()
-                            .expect("!lock")
-                            .as_ref()
-                            .unwrap()
-                            .send(ChannelEventsOut::StoppedError(status.to_string()));
-                    } else {
-                        send_out
-                            .lock()
-                            .expect("!lock")
-                            .as_ref()
-                            .unwrap()
-                            .send(ChannelEventsOut::StoppedSuccess);
+            if let Some(event) = receiver.recv().await {
+                match event {
+                    InstanceInEvents::ExecuteStdinCommand(cmd) => {
+                        if let Err(err) = child
+                            .stdin
+                            .as_mut()
+                            .expect("Couldn't retrieve stdin from spawned child.")
+                            .write(format!("{cmd}\n").as_bytes())
+                        {
+                            if let Err(err) = send_out
+                                .send(HandlerEvents::InstanceOutEvent(
+                                    InstanceOutEvents::ExecuteStdinCommandFailure(err.to_string()),
+                                ))
+                                .await {
+                                    log::error!("Error during sending [InstanceOutEvents::ExecuteStdinCommandFailure]. Err {err}")
+                                };
+                        };
                     }
                 }
+            } else {
+                panic!("Receiver is already closed.")
+            }
 
-                if let Ok(event) = receive_in.recv() {
-                    match event {
-                        ChannelEventsIn::ExecuteStdinCommand(cmd) => {
-                            if let Err(err) = child
-                                .stdin
-                                .as_mut()
-                                .expect("!stdin")
-                                .write(format!("{cmd}\n").as_bytes())
-                            {
-                                send_out.lock().expect("!lock").as_ref().unwrap().send(
-                                    ChannelEventsOut::ExecuteStdinCommandFailure(err.to_string()),
-                                );
-                            };
+            let current_elapsed = now.elapsed().as_secs();
+
+            if let Ok(stream) = stdout.lock().as_mut() {
+                if let Ok(converted_stream) = str::from_utf8(&stream.to_owned()) {
+                    if let Some(newline_position) = converted_stream.find("\n") {
+                        // remove line with newline from stream
+                        stream.drain(..(newline_position + 1));
+
+                        // possible position for logging the streamed lines
+                        // let split = converted_stream.split("\n").collect::<Vec<&str>>();
+                        // split.get(0).unwrap() is the last line, everything afterwards are new unfinished lines
+                        let split = converted_stream.split("\n").collect::<Vec<&str>>();
+                        log::debug!("{}", split.get(0).unwrap());
+
+                        if self.instance.startup.wait_for_stdout {
+                            now = Instant::now();
                         }
-                    }
-                }
-
-                let current_elapsed = now.elapsed().as_secs();
-
-                if let Ok(stream) = out.lock().as_mut() {
-                    if let Ok(converted_stream) = str::from_utf8(&stream.to_owned()) {
-                        if let Some(newline_position) = converted_stream.find("\n") {
-                            // remove line with newline from stream
-                            stream.drain(..(newline_position + 1));
-
-                            // possible position for logging the streamed lines
-                            // let split = converted_stream.split("\n").collect::<Vec<&str>>();
-                            // split.get(0).unwrap() is the last line, everything afterwards are new unfinished lines
-                            let split = converted_stream.split("\n").collect::<Vec<&str>>();
-                            log::debug!("{}", split.get(0).unwrap());
-
-                            if instance.startup.wait_for_stdout {
-                                now = Instant::now();
-                            }
-                        } else if !reached_timeout {
-                            if current_elapsed > last_elapsed_sec {
-                                last_elapsed_sec = current_elapsed;
-                                log::debug!("{current_elapsed}s");
-                            } else if current_elapsed > instance.startup.time_to_wait {
-                                send_out.lock().expect("!lock").as_ref().unwrap().send(
-                                    ChannelEventsOut::StartupTimeoutFinished(
-                                        instance_name.to_string(),
-                                        instance.startup.msg.to_owned(),
-                                    ),
-                                );
-                                // reset timer
-                                now = Instant::now();
-                                reached_timeout = true;
-                            }
+                    } else if !self.reached_timeout {
+                        if current_elapsed > last_elapsed_sec {
+                            last_elapsed_sec = current_elapsed;
+                            log::debug!("{current_elapsed}s");
+                        } else if current_elapsed > self.instance.startup.time_to_wait {
+                            if let Err(err) = send_out.send(HandlerEvents::InstanceOutEvent(
+                                InstanceOutEvents::StartupTimeoutFinished(
+                                    self.name.to_string(),
+                                    self.instance.startup.msg.to_owned(),
+                                ),
+                            )).await {
+                                log::error!("Error during sending [InstanceOutEvents::StartupTimeoutFinished]. Err: {err}")
+                            };
+                            // reset timer
+                            now = Instant::now();
+                            self.reached_timeout = true;
                         }
                     }
                 }
             }
-        });
-
-        Ok(send_in)
+        }
     }
 
     /// https://stackoverflow.com/a/34616729/10386701

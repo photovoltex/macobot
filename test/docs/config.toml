@@ -15,6 +15,7 @@ stop = { description = "Stops the vanilla minecraft server.", stdin_cmd = "stop"
 restart = { description = "Restarts the vanilla minecraft server."}
 [vanilla-mc.bot]
 server-id = 0
-channel-ids = [ 0, 1 ]
-user-ids = [ 0, 1 ]
+fallback-channel-id = 0
+allowed-channel-ids = [ 0, 1 ]
+allowed-user-ids = [ 0, 1 ]
 shutdown-msg = "Shuting server down."
