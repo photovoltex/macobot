@@ -26,7 +26,7 @@ async fn main() {
 
     // Build our client.
     let mut client = client
-        .event_handler(handler)
+        .event_handler_arc(handler)
         .await
         .expect("Error creating client");
 

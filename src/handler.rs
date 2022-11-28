@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use serenity::async_trait;
 use serenity::http::Http;
@@ -15,7 +16,6 @@ use crate::instance::{InstanceInEvents, InstanceOutEvents, InstanceRunner};
 pub enum HandlerEvents {
     InstanceOutEvent(InstanceOutEvents),
     ErrorOnSendingDiscordMessage(String),
-    InsertActiveInstance(String, ActiveInstance),
 }
 
 pub struct ActiveInstance {
@@ -26,7 +26,7 @@ pub struct ActiveInstance {
 pub struct Handler {
     cfg: Config,
     http: Http,
-    active_instances: HashMap<String, ActiveInstance>,
+    active_instances: Arc<Mutex<HashMap<String, ActiveInstance>>>,
     sender: Sender<HandlerEvents>,
 }
 
@@ -42,33 +42,24 @@ impl Handler {
         )
     }
 
-    pub fn new(cfg: Config) -> Handler {
+    pub fn new(cfg: Config) -> Arc<Handler> {
         let http = Http::new(&cfg.bot_token);
         let (sender, receiver) = mpsc::channel::<HandlerEvents>(5);
-        let mut handler = Handler {
+        let handler = Arc::new(Handler {
             cfg,
             http,
-            active_instances: HashMap::new(),
+            active_instances: Arc::new(Mutex::new(HashMap::new())),
             sender,
-        };
+        });
 
-        // start async receiver_thread
-        tokio::runtime::Builder::new_multi_thread()
-            .thread_name("Handler")
-            .build()
-            .expect("Couldn't build runtime to execute the async receiver thread.")
-            .block_on(handler.spawn_receiver_thread(receiver));
+        tokio::spawn(Self::start_receiver_thread(handler.clone(), receiver));
 
         handler
     }
 
-    pub async fn spawn_receiver_thread(&mut self, receiver: Receiver<HandlerEvents>) {
+    pub async fn start_receiver_thread(handler: Arc<Self>, receiver: Receiver<HandlerEvents>) {
+        log::debug!("Started receiver thread!");
         let mut receiver = receiver;
-
-        let rt = tokio::runtime::Builder::new_multi_thread()
-            .thread_name("SendMessage")
-            .build()
-            .expect("Couldn't build multithread runtime for sending discord messages.");
 
         loop {
             match receiver.recv().await {
@@ -80,6 +71,7 @@ impl Handler {
                         InstanceOutEvents::Stopped => todo!("StopSuccess"),
                         InstanceOutEvents::StoppedWithError(err) => todo!("StoppedError: {err}"),
                         InstanceOutEvents::ExecuteStdinCommandFailure(err) => {
+                            // fixme: this is currently thrown if stdin is executed
                             todo!("ExecuteStdinCommandFailure: {err}")
                         }
                         InstanceOutEvents::StartupTimeoutFinished(instance_name, msg) => {
@@ -88,10 +80,11 @@ impl Handler {
                             );
 
                             let channel = if let Some(instance) =
-                                self.active_instances.get(&instance_name)
+                                handler.active_instances.lock().await.get(&instance_name)
                             {
                                 Some(instance.channel)
-                            } else if let Some(instance) = self.cfg.instances.get(&instance_name) {
+                            } else if let Some(instance) = handler.cfg.instances.get(&instance_name)
+                            {
                                 Some(ChannelId(instance.bot.fallback_channel_id))
                             } else {
                                 log::error!("Couldn't retrieve any channel for InstanceOutEvent::StartupTimeoutFinished.");
@@ -99,7 +92,7 @@ impl Handler {
                             };
 
                             if let Some(channel) = channel {
-                                rt.block_on(self.send_discord_message(channel, instance_name));
+                                handler.send_discord_message(channel, instance_name).await;
                             }
                         }
                         InstanceOutEvents::ChangeDirFailure => {
@@ -110,9 +103,6 @@ impl Handler {
                         }
                     }
                 }
-                Some(HandlerEvents::InsertActiveInstance(string, active_instance)) => {
-                    self.active_instances.insert(string, active_instance);
-                }
                 None => todo!("None, so channel is closed... handle in next revision"),
             };
         }
@@ -120,7 +110,7 @@ impl Handler {
 
     async fn send_discord_message(&self, channel: ChannelId, msg: String) {
         let res = channel
-            .send_message(&self.http, |m| m.content(msg).tts(true))
+            .send_message(&self.http, |m| m.content(msg))
             .await;
         match res {
             Ok(result) => log::trace!("{:#?}", result),
@@ -161,40 +151,41 @@ impl EventHandler for Handler {
                         {
                             command_response = match slash_cmd_name.trim() {
                                 "start" => {
-                                    if let Err(err) = self
-                                        .sender
-                                        .send(HandlerEvents::InsertActiveInstance(
-                                            instance_name.to_string(),
-                                            ActiveInstance {
-                                                sender: InstanceRunner::new(
-                                                    instance_name.to_string(),
-                                                    instance.clone(),
-                                                    self.sender.clone(),
-                                                ),
-                                                channel: command.channel_id,
-                                            },
-                                        ))
-                                        .await
-                                    {
-                                        log::warn!("Error inserting into active instance due to failed sending. Err: {err}");
-                                    };
+                                    log::debug!("Start command received for [{instance_name}]");
+                                    self.active_instances.lock().await.insert(
+                                        instance_name.to_string(),
+                                        ActiveInstance {
+                                            sender: InstanceRunner::new(
+                                                instance_name.to_string(),
+                                                instance.clone(),
+                                                self.sender.clone(),
+                                            ),
+                                            channel: command.channel_id,
+                                        },
+                                    );
 
                                     format!("Started instance: `{instance_name}`. Will send a message after command startup.").to_string()
                                 }
                                 "stop" => {
-                                    let res = self
-                                        .active_instances
-                                        .get(&instance_name.to_string())
-                                        .expect("!get")
-                                        .sender
-                                        .send(InstanceInEvents::ExecuteStdinCommand(
-                                            slash_cmd.stdin_cmd.as_ref().unwrap().to_string(),
-                                        ));
-                                    // use slash_cmd.stdin_cmd here
-                                    if let Err(err) = res.await {
-                                        err.to_string()
+                                    let await_instances = self.active_instances.lock().await;
+
+                                    if let Some(active_instance) =
+                                        await_instances.get(&instance_name.to_string())
+                                    {
+                                        let sender_result = active_instance
+                                            .sender
+                                            .send(InstanceInEvents::ExecuteStdinCommand(
+                                                slash_cmd.stdin_cmd.as_ref().unwrap().to_string(),
+                                            ))
+                                            .await;
+
+                                        if let Err(err) = sender_result {
+                                            err.to_string()
+                                        } else {
+                                            format!("Stopped {instance_name}.").to_string()
+                                        }
                                     } else {
-                                        format!("Stopped {instance_name}.").to_string()
+                                        "Execution failed due to internal error".to_string()
                                     }
                                 }
                                 _ => "not currently supported or implemented".to_string(),

@@ -28,4 +28,4 @@ root:
 
 loggers:
   macobot:
-    level: debug
+    level: trace
