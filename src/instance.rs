@@ -5,14 +5,16 @@ use std::process::Stdio;
 use std::process::{Child, Command};
 use std::str;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serenity::prelude::Mutex;
 use tokio::sync::mpsc::{self, Receiver, Sender};
+use tokio::time::sleep;
 
 use crate::config::Instance;
 use crate::handler::HandlerEvents;
 
+#[derive(Debug)]
 pub enum InstanceInEvents {
     ExecuteStdinCommand(String),
 }
@@ -20,10 +22,10 @@ pub enum InstanceInEvents {
 #[derive(Debug)]
 pub enum InstanceOutEvents {
     ChangeDirFailure,
-    Stopped,
+    Stopped(String),
     StoppedWithError(String),
     StdoutInitializingFailure,
-    StartupTimeoutFinished(String, String),
+    StartupTimeoutFinished(String),
     ExecuteStdinCommandFailure(String),
 }
 
@@ -45,7 +47,7 @@ impl InstanceRunner {
         instance: Instance,
         sender_out: Sender<HandlerEvents>,
     ) -> Sender<InstanceInEvents> {
-        log::trace!("Created new InstanceRunner");
+        log::trace!("Creating new InstanceRunner");
         let (sender, receiver_in) = mpsc::channel::<InstanceInEvents>(5);
         let runner = InstanceRunner {
             name,
@@ -54,14 +56,15 @@ impl InstanceRunner {
         };
 
         tokio::spawn(async move {
-            log::trace!("Spawned runner thread for child.");
+            log::trace!("Spawned runner thread for child");
             let (child, stdout) = runner.spawn_child(&sender_out).await;
             runner
                 .run_loop(child, stdout, sender_out, receiver_in)
                 .await;
-            log::trace!("Finished runner thread for child.")
+            log::trace!("Finished runner thread for child")
         });
 
+        log::trace!("Created new InstanceRunner");
         sender
     }
 
@@ -97,8 +100,8 @@ impl InstanceRunner {
         let out = match child.stdout.take() {
             Some(stdout) => {
                 log::trace!("Collecting child_stream_as_vec");
-                Self::child_stream_to_vec(stdout).await
-            },
+                Self::child_stream_to_vec(stdout)
+            }
             None => {
                 if let Err(err) = send_out
                     .send(HandlerEvents::InstanceOutEvent(
@@ -129,7 +132,10 @@ impl InstanceRunner {
         let mut now: Instant = Instant::now();
         let mut last_elapsed_sec = now.elapsed().as_secs();
 
+        log::trace!("All prerequisites were successful. Starting run loop");
         loop {
+            sleep(Duration::from_millis(100)).await;
+
             if let Ok(Some(status)) = child.try_wait() {
                 log::debug!("Child-Process: {} finished with: {}", self.instance, status);
 
@@ -141,7 +147,9 @@ impl InstanceRunner {
                         .await
                 } else {
                     send_out
-                        .send(HandlerEvents::InstanceOutEvent(InstanceOutEvents::Stopped))
+                        .send(HandlerEvents::InstanceOutEvent(InstanceOutEvents::Stopped(
+                            self.name,
+                        )))
                         .await
                 };
 
@@ -151,12 +159,13 @@ impl InstanceRunner {
                         send_err
                     )
                 } else {
+                    // exit loop
                     return;
                 }
             }
 
-            if let Some(event) = receiver.recv().await {
-                match event {
+            match receiver.try_recv() {
+                Ok(event) => match event {
                     InstanceInEvents::ExecuteStdinCommand(cmd) => {
                         if let Err(err) = child
                             .stdin
@@ -174,11 +183,15 @@ impl InstanceRunner {
                             };
                         };
                     }
+                },
+                Err(err) => {
+                    if let mpsc::error::TryRecvError::Disconnected = err {
+                        log::error!("Receiver was disconnected")
+                    }
                 }
             }
             // todo: consider if await receives None (happened after second execution of the command, while the first didn't started the child for some reason (see stream as vec))
 
-            let current_elapsed = now.elapsed().as_secs();
             let mut stream = stdout.lock().await;
 
             if let Ok(converted_stream) = str::from_utf8(&stream.to_owned()) {
@@ -195,63 +208,71 @@ impl InstanceRunner {
                     if self.instance.startup.wait_for_stdout {
                         now = Instant::now();
                     }
-                } else if !self.reached_timeout {
-                    if current_elapsed > last_elapsed_sec {
-                        last_elapsed_sec = current_elapsed;
-                        log::debug!("{current_elapsed}s");
-                    } else if current_elapsed > self.instance.startup.time_to_wait {
-                        if let Err(err) = send_out
-                            .send(HandlerEvents::InstanceOutEvent(
-                                InstanceOutEvents::StartupTimeoutFinished(
-                                    self.name.to_string(),
-                                    self.instance.startup.msg.to_owned(),
-                                ),
-                            ))
-                            .await
-                        {
-                            log::error!("Error during sending [InstanceOutEvents::StartupTimeoutFinished]. Err: {err}")
-                        };
-                        // reset timer
-                        now = Instant::now();
-                        self.reached_timeout = true;
-                    }
+                }
+            }
+
+            if !self.reached_timeout {
+                let current_elapsed = now.elapsed().as_secs();
+
+                if current_elapsed > last_elapsed_sec {
+                    last_elapsed_sec = current_elapsed;
+                    log::trace!("{current_elapsed}s");
+                } else if current_elapsed > self.instance.startup.time_to_wait {
+                    if let Err(err) = send_out
+                        .send(HandlerEvents::InstanceOutEvent(
+                            InstanceOutEvents::StartupTimeoutFinished(self.name.to_string()),
+                        ))
+                        .await
+                    {
+                        log::error!("Error during sending [InstanceOutEvents::StartupTimeoutFinished]. Err: {err}")
+                    };
+                    // reset timer
+                    now = Instant::now();
+                    self.reached_timeout = true;
                 }
             }
         }
     }
 
-    // fixme: has some weird behavior, which only captures the child correct on the second run
     /// https://stackoverflow.com/a/34616729/10386701
     /// Pipe streams are blocking, we need separate threads to monitor them without blocking the primary thread.
-    async fn child_stream_to_vec<R>(mut stream: R) -> Arc<Mutex<Vec<u8>>>
+    fn child_stream_to_vec<R>(stream: R) -> Arc<Mutex<Vec<u8>>>
     where
         R: Read + Send + 'static,
     {
+        log::trace!("Starting stream reading thread");
         let out = Arc::new(Mutex::new(Vec::new()));
         let vec = out.clone();
 
-        tokio::spawn(async move {
-            loop {
-                let mut buf = [0];
-                match stream.read(&mut buf) {
-                    Err(err) => {
-                        log::error!("{}] Error reading from stream: {}", line!(), err);
+        tokio::spawn(Self::read_stream_loop(stream, vec));
+        log::trace!("Finished starting stream reading thread");
+
+        out
+    }
+
+    async fn read_stream_loop<R>(mut stream: R, vec: Arc<Mutex<Vec<u8>>>)
+    where
+        R: Read + Send + 'static,
+    {
+        log::trace!("Started stream reading thread");
+        loop {
+            let mut buf = [0];
+            match stream.read(&mut buf) {
+                Err(err) => {
+                    log::error!("{}] Error reading from stream: {}", line!(), err);
+                    break;
+                }
+                Ok(got) => {
+                    if got == 0 {
                         break;
-                    }
-                    Ok(got) => {
-                        if got == 0 {
-                            break;
-                        } else if got == 1 {
-                            vec.lock().await.push(buf[0])
-                        } else {
-                            log::error!("{}] Unexpected number of bytes: {}", line!(), got);
-                            break;
-                        }
+                    } else if got == 1 {
+                        vec.lock().await.push(buf[0])
+                    } else {
+                        log::error!("{}] Unexpected number of bytes: {}", line!(), got);
+                        break;
                     }
                 }
             }
-        });
-
-        out
+        }
     }
 }

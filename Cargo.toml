@@ -25,4 +25,4 @@ features = ["client", "gateway", "rustls_backend", "model"]
 
 [dependencies.tokio]
 version = "1.0"
-features = ["macros", "rt-multi-thread", "sync"]
+features = ["macros", "rt-multi-thread", "sync", "time"]

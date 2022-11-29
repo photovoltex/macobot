@@ -68,32 +68,29 @@ impl Handler {
                 }
                 Some(HandlerEvents::InstanceOutEvent(instance_event_out)) => {
                     match instance_event_out {
-                        InstanceOutEvents::Stopped => todo!("StopSuccess"),
+                        InstanceOutEvents::Stopped(instance_name) => {
+                            log::debug!(
+                                "[{instance_name}] Stopping finished. Sending stopped message."
+                            );
+                            Self::send_discord_message_to_instance_channel(
+                                &handler,
+                                &instance_name,
+                                format!("Stopped `{instance_name}`"),
+                            )
+                            .await;
+                        }
                         InstanceOutEvents::StoppedWithError(err) => todo!("StoppedError: {err}"),
                         InstanceOutEvents::ExecuteStdinCommandFailure(err) => {
                             // fixme: this is currently thrown if stdin is executed
                             todo!("ExecuteStdinCommandFailure: {err}")
                         }
-                        InstanceOutEvents::StartupTimeoutFinished(instance_name, msg) => {
-                            log::debug!(
-                                "[{instance_name}] Startup timeout finished. Sending [{msg}]."
-                            );
-
-                            let channel = if let Some(instance) =
-                                handler.active_instances.lock().await.get(&instance_name)
-                            {
-                                Some(instance.channel)
-                            } else if let Some(instance) = handler.cfg.instances.get(&instance_name)
-                            {
-                                Some(ChannelId(instance.bot.fallback_channel_id))
-                            } else {
-                                log::error!("Couldn't retrieve any channel for InstanceOutEvent::StartupTimeoutFinished.");
-                                None
-                            };
-
-                            if let Some(channel) = channel {
-                                handler.send_discord_message(channel, instance_name).await;
-                            }
+                        InstanceOutEvents::StartupTimeoutFinished(instance_name) => {
+                            log::debug!("[{instance_name}] Startup timeout finished. Sending startup message.");
+                            Self::send_discord_message_to_instance_channel(
+                                &handler,
+                                &instance_name,
+                                format!("Startup for `{instance_name}` finished. Server/Application is up and running.")
+                            ).await;
                         }
                         InstanceOutEvents::ChangeDirFailure => {
                             todo!("InstanceOutEvents::ChangeDirFailure")
@@ -108,10 +105,28 @@ impl Handler {
         }
     }
 
+    async fn send_discord_message_to_instance_channel(
+        handler: &Handler,
+        instance_name: &str,
+        msg: String,
+    ) {
+        let channel =
+            if let Some(instance) = handler.active_instances.lock().await.get(instance_name) {
+                Some(instance.channel)
+            } else if let Some(instance) = handler.cfg.instances.get(instance_name) {
+                Some(ChannelId(instance.bot.fallback_channel_id))
+            } else {
+                log::error!("Couldn't retrieve any active channel for `{instance_name}`.");
+                None
+            };
+
+        if let Some(channel) = channel {
+            handler.send_discord_message(channel, msg).await;
+        }
+    }
+
     async fn send_discord_message(&self, channel: ChannelId, msg: String) {
-        let res = channel
-            .send_message(&self.http, |m| m.content(msg))
-            .await;
+        let res = channel.send_message(&self.http, |m| m.content(msg)).await;
         match res {
             Ok(result) => log::trace!("{:#?}", result),
             Err(err) => {
@@ -182,7 +197,7 @@ impl EventHandler for Handler {
                                         if let Err(err) = sender_result {
                                             err.to_string()
                                         } else {
-                                            format!("Stopped {instance_name}.").to_string()
+                                            format!("Stopping `{instance_name}`.").to_string()
                                         }
                                     } else {
                                         "Execution failed due to internal error".to_string()

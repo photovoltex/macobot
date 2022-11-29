@@ -9,7 +9,7 @@ use serenity::{prelude::GatewayIntents, Client};
 
 use crate::handler::Handler;
 
-#[tokio::main]
+#[tokio::main(flavor = "multi_thread", worker_threads = 10)]
 async fn main() {
     // init logger
     log4rs::init_file("./log4rs.yml", Default::default()).unwrap();
