@@ -38,7 +38,6 @@ impl Display for Instance {
 pub struct InstanceRunner {
     name: String,
     instance: Instance,
-    reached_timeout: bool,
 }
 
 impl InstanceRunner {
@@ -47,29 +46,26 @@ impl InstanceRunner {
         instance: Instance,
         sender_out: Sender<HandlerEvents>,
     ) -> Sender<InstanceInEvents> {
-        log::trace!("Creating new InstanceRunner");
+        log::trace!("[{name}] Creating new InstanceRunner");
         let (sender, receiver_in) = mpsc::channel::<InstanceInEvents>(5);
-        let runner = InstanceRunner {
-            name,
-            instance,
-            reached_timeout: false,
-        };
+        let runner = InstanceRunner { name, instance };
 
+        let name = runner.name.clone();
         tokio::spawn(async move {
-            log::trace!("Spawned runner thread for child");
+            log::trace!("[{}] Spawned runner thread for child", runner.name);
             let (child, stdout) = runner.spawn_child(&sender_out).await;
             runner
                 .run_loop(child, stdout, sender_out, receiver_in)
                 .await;
-            log::trace!("Finished runner thread for child")
+            log::trace!("[{}] Finished runner thread for child", runner.name)
         });
 
-        log::trace!("Created new InstanceRunner");
+        log::trace!("[{name}] Created new InstanceRunner");
         sender
     }
 
     async fn spawn_child(&self, send_out: &Sender<HandlerEvents>) -> (Child, Arc<Mutex<Vec<u8>>>) {
-        log::trace!("Started spawn_child");
+        log::trace!("[{}] Started spawn_child", self.name);
         // set path if given var is available
         if let Some(path) = &self.instance.cmd_exec_dir {
             if let Err(err) = std::env::set_current_dir(Path::new(&path)) {
@@ -79,9 +75,12 @@ impl InstanceRunner {
                     ))
                     .await
                 {
-                    panic!("Failed to change current directory and sending error message. Err: {err}, SendErr: {send_err}")
+                    panic!("[{}] Failed to change current directory and sending error message. Err: {err}, SendErr: {send_err}", self.name)
                 } else {
-                    panic!("Failed to change current directory. Err: {err}")
+                    panic!(
+                        "[{}] Failed to change current directory. Err: {err}",
+                        self.name
+                    )
                 }
             }
         }
@@ -99,7 +98,7 @@ impl InstanceRunner {
         // todo: maybe also get stderr and stream and analyze it
         let out = match child.stdout.take() {
             Some(stdout) => {
-                log::trace!("Collecting child_stream_as_vec");
+                log::trace!("[{}] Collecting child_stream_as_vec", self.name);
                 Self::child_stream_to_vec(stdout)
             }
             None => {
@@ -109,9 +108,12 @@ impl InstanceRunner {
                     ))
                     .await
                 {
-                    panic!("Couldn't retrieve stdout from spawned child and sending error message. Err: {err}")
+                    panic!("[{}] Couldn't retrieve stdout from spawned child and sending error message. Err: {err}", self.name)
                 } else {
-                    panic!("Couldn't retrieve stdout from spawned child.")
+                    panic!(
+                        "[{}] Couldn't retrieve stdout from spawned child.",
+                        self.name
+                    )
                 }
             }
         };
@@ -120,7 +122,7 @@ impl InstanceRunner {
     }
 
     async fn run_loop(
-        mut self,
+        &self,
         child: Child,
         stdout: Arc<Mutex<Vec<u8>>>,
         send_out: Sender<HandlerEvents>,
@@ -129,15 +131,24 @@ impl InstanceRunner {
         let mut child = child;
         let mut receiver = receiver_in;
 
+        let mut reached_timeout = false;
         let mut now: Instant = Instant::now();
         let mut last_elapsed_sec = now.elapsed().as_secs();
 
-        log::trace!("All prerequisites were successful. Starting run loop");
+        log::trace!(
+            "[{}] All prerequisites were successful. Starting run loop",
+            self.name
+        );
         loop {
             sleep(Duration::from_millis(100)).await;
 
             if let Ok(Some(status)) = child.try_wait() {
-                log::debug!("Child-Process: {} finished with: {}", self.instance, status);
+                log::debug!(
+                    "[{}] Child-Process: {} finished with: {}",
+                    self.name,
+                    self.instance,
+                    status
+                );
 
                 let res = if !status.success() {
                     send_out
@@ -148,15 +159,15 @@ impl InstanceRunner {
                 } else {
                     send_out
                         .send(HandlerEvents::InstanceOutEvent(InstanceOutEvents::Stopped(
-                            self.name,
+                            self.name.clone(),
                         )))
                         .await
                 };
 
                 if let Err(send_err) = res {
                     panic!(
-                        "Couldn't send stopped message to HandlerEvents. {}",
-                        send_err
+                        "[{}] Couldn't send stopped message to HandlerEvents. {}",
+                        self.name, send_err
                     )
                 } else {
                     // exit loop
@@ -170,7 +181,10 @@ impl InstanceRunner {
                         if let Err(err) = child
                             .stdin
                             .as_mut()
-                            .expect("Couldn't retrieve stdin from spawned child.")
+                            .expect(&format!(
+                                "[{}] Couldn't retrieve stdin from spawned child.",
+                                self.name
+                            ))
                             .write(format!("{cmd}\n").as_bytes())
                         {
                             if let Err(err) = send_out
@@ -179,18 +193,17 @@ impl InstanceRunner {
                                 ))
                                 .await
                             {
-                                log::error!("Error during sending [InstanceOutEvents::ExecuteStdinCommandFailure]. Err {err}")
+                                log::error!("[{}] Error during sending [InstanceOutEvents::ExecuteStdinCommandFailure]. Err {err}", self.name)
                             };
                         };
                     }
                 },
                 Err(err) => {
                     if let mpsc::error::TryRecvError::Disconnected = err {
-                        log::error!("Receiver was disconnected")
+                        log::error!("[{}] Receiver was disconnected", self.name)
                     }
                 }
             }
-            // todo: consider if await receives None (happened after second execution of the command, while the first didn't started the child for some reason (see stream as vec))
 
             let mut stream = stdout.lock().await;
 
@@ -203,7 +216,7 @@ impl InstanceRunner {
                     // let split = converted_stream.split("\n").collect::<Vec<&str>>();
                     // split.get(0).unwrap() is the last line, everything afterwards are new unfinished lines
                     let split = converted_stream.split("\n").collect::<Vec<&str>>();
-                    log::debug!("{}", split.get(0).unwrap());
+                    log::debug!("[{}] {}", self.name, split.get(0).unwrap());
 
                     if self.instance.startup.wait_for_stdout {
                         now = Instant::now();
@@ -211,7 +224,7 @@ impl InstanceRunner {
                 }
             }
 
-            if !self.reached_timeout {
+            if !reached_timeout {
                 let current_elapsed = now.elapsed().as_secs();
 
                 if current_elapsed > last_elapsed_sec {
@@ -224,11 +237,11 @@ impl InstanceRunner {
                         ))
                         .await
                     {
-                        log::error!("Error during sending [InstanceOutEvents::StartupTimeoutFinished]. Err: {err}")
+                        log::error!("[{}] Error during sending [InstanceOutEvents::StartupTimeoutFinished]. Err: {err}", self.name)
                     };
                     // reset timer
                     now = Instant::now();
-                    self.reached_timeout = true;
+                    reached_timeout = true;
                 }
             }
         }
