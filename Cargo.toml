@@ -3,12 +3,8 @@ name = "macobot"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
-[dependencies]
-confy = "0.5.1"
-toml = "0.5"
-log = "0.4.17"
+[dependencies.log]
+version = "0.4.17"
 
 [dependencies.log4rs]
 version = "1.2.0"
@@ -17,6 +13,12 @@ features = [ "console_appender", "rolling_file_appender" ]
 [dependencies.serde]
 version = "1.0"
 features = ["derive"]
+
+[dependencies.toml]
+version  = "0.5"
+
+[dependencies.confy]
+version = "0.5.1"
 
 [dependencies.serenity]
 version = "0.11.5"

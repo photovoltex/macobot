@@ -11,8 +11,14 @@ use serenity::prelude::Mutex;
 use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::time::sleep;
 
-use crate::config::Instance;
+use crate::config::bot::Instance;
 use crate::handler::HandlerEvents;
+
+impl Display for Instance {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "[{} {}]", self.cmd_path, self.cmd_args.join(" "))
+    }
+}
 
 #[derive(Debug)]
 pub enum InstanceInEvents {
@@ -27,12 +33,6 @@ pub enum InstanceOutEvents {
     StdoutInitializingFailure,
     StartupTimeoutFinished(String),
     ExecuteStdinCommandFailure(String),
-}
-
-impl Display for Instance {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "[{} {}]", self.cmd_path, self.cmd_args.join(" "))
-    }
 }
 
 pub struct InstanceRunner {
@@ -95,7 +95,7 @@ impl InstanceRunner {
             .spawn()
             .expect("failed to execute child");
 
-        // todo: maybe also get stderr and stream and analyze it
+        // todo: maybe also get stderr, stream and analyze
         let out = match child.stdout.take() {
             Some(stdout) => {
                 log::trace!("[{}] Collecting child_stream_as_vec", self.name);
@@ -212,9 +212,6 @@ impl InstanceRunner {
                     // remove line with newline from stream
                     stream.drain(..(newline_position + 1));
 
-                    // possible position for logging the streamed lines
-                    // let split = converted_stream.split("\n").collect::<Vec<&str>>();
-                    // split.get(0).unwrap() is the last line, everything afterwards are new unfinished lines
                     let split = converted_stream.split("\n").collect::<Vec<&str>>();
                     log::debug!("[{}] {}", self.name, split.get(0).unwrap());
 
