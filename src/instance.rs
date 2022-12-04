@@ -16,7 +16,10 @@ use crate::handler::HandlerEvents;
 
 impl Display for Instance {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "[{} {}]", self.cmd_path, self.cmd_args.join(" "))
+        match &self.cmd_args {
+            Some(arguments) => write!(f, "[{} {}]", self.cmd_path, arguments.join(" ")),
+            None => write!(f, "[{}]", self.cmd_path)
+        }
     }
 }
 
@@ -87,8 +90,15 @@ impl InstanceRunner {
 
         log::trace!("Spawn child");
         // start child process
-        let mut child = Command::new(&self.instance.cmd_path)
-            .args(&self.instance.cmd_args.clone())
+        let mut child = Command::new(&self.instance.cmd_path);
+
+        let child = if let Some(args) = self.instance.cmd_args.clone() {
+            child.args(args)
+        } else {
+            &mut child
+        };
+
+        let mut child = child
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

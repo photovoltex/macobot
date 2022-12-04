@@ -3,7 +3,7 @@ bot-token = ""
 [instance1]
 cmd-exec-dir = "" # has to be a full path
 cmd-path = "" # absolut path or command available on the command line
-cmd-args = [ "", "", "" ]
+cmd-args = [ "", "", "" ] # optional
 [instance1.startup]
 time-to-wait = 10 # time to wait after command execution, or stdout finish
 wait-for-stdout = true # if true waits for the stdout to finish befor counting the time

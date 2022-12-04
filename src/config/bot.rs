@@ -20,7 +20,7 @@ impl Config {
 pub struct Instance {
     pub cmd_exec_dir: Option<String>,
     pub cmd_path: String,
-    pub cmd_args: Vec<String>,
+    pub cmd_args: Option<Vec<String>>,
     pub startup: StartupConfig,
     pub restrictions: RestrictionConfig,
     pub slash_commands: HashMap<String, SlashCommandConfig>,

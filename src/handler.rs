@@ -235,6 +235,7 @@ impl EventHandler for Handler {
     async fn ready(&self, ctx: Context, ready: Ready) {
         log::debug!("{} is connected!", ready.user.name);
 
+        // todo: redesing this spot... set_app_cmd overrides all commands
         for (instance_name, instance) in self.cfg.instances.to_owned() {
             let guild_id = GuildId(instance.restrictions.server_id);
 
