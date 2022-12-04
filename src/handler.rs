@@ -153,7 +153,7 @@ impl EventHandler for Handler {
             let cmd_name = command.data.name.as_str();
             let split: Vec<&str> = cmd_name.split(Handler::CMD_NAME_SEPARATOR).collect();
 
-            let (instance_name, slash_cmd_name) = (split.get(0), split.get(1));
+            let (slash_cmd_name, instance_name) = (split.get(0), split.get(1));
 
             let command_response = if let Some(instance_name) = instance_name {
                 if let Some(slash_cmd_name) = slash_cmd_name {

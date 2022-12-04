@@ -10,8 +10,8 @@ wait-for-stdout = true # if true waits for the stdout to finish befor counting t
 [instance1.restrictions]
 server-id = 0
 fallback-channel-id = 0
-allowed-channel-ids = [ 0, 1 ]
-allowed-user-ids = [ 0, 1 ]
+allowed-channel-ids = [ 0, 1 ] # todo: not used currently
+allowed-user-ids = [ 0, 1 ] # todo: not used currently
 [instance1.slash-commands]
 start = { description = ""}
 restart = { description = ""} # todo: not yet reserved, but will be soon
