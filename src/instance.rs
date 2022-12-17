@@ -1,26 +1,34 @@
-use std::fmt::Display;
-use std::io::{Read, Write};
-use std::path::Path;
-use std::process::Stdio;
-use std::process::{Child, Command};
-use std::str;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::{
+    collections::HashMap,
+    fmt::Display,
+    io::{Read, Write},
+    path::Path,
+    process::{Child, Command, Stdio},
+    str,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
+use serde::{Deserialize, Serialize};
 use serenity::prelude::Mutex;
-use tokio::sync::mpsc::{self, Receiver, Sender};
-use tokio::time::sleep;
+use tokio::{
+    sync::mpsc::{self, Receiver, Sender},
+    time::sleep,
+};
 
-use crate::config::bot::Instance;
-use crate::handler::HandlerEvents;
+use crate::config::bot::{RestrictionConfig, SlashCommandConfig, StartupConfig};
+use crate::handler::handler::HandlerEvents;
 
-impl Display for Instance {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match &self.cmd_args {
-            Some(arguments) => write!(f, "[{} {}]", self.cmd_path, arguments.join(" ")),
-            None => write!(f, "[{}]", self.cmd_path)
-        }
-    }
+// todo: separate Instance config struct and struct here... shouldn't be the same
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all(deserialize = "kebab-case"))]
+pub struct Instance {
+    pub cmd_exec_dir: Option<String>,
+    pub cmd_path: String,
+    pub cmd_args: Option<Vec<String>>,
+    pub startup: StartupConfig,
+    pub restrictions: RestrictionConfig,
+    pub slash_commands: HashMap<String, SlashCommandConfig>,
 }
 
 #[derive(Debug)]
@@ -41,6 +49,15 @@ pub enum InstanceOutEvents {
 pub struct InstanceRunner {
     name: String,
     instance: Instance,
+}
+
+impl Display for Instance {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.cmd_args {
+            Some(arguments) => write!(f, "[{} {}]", self.cmd_path, arguments.join(" ")),
+            None => write!(f, "[{}]", self.cmd_path),
+        }
+    }
 }
 
 impl InstanceRunner {

@@ -6,8 +6,7 @@ use std::env;
 
 use serenity::{prelude::GatewayIntents, Client};
 
-use crate::config::bot;
-use crate::handler::Handler;
+use crate::{config::bot, handler::handler::Handler};
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 10)]
 async fn main() {
@@ -21,6 +20,7 @@ async fn main() {
 
     let client = Client::builder(&cfg.bot_token, GatewayIntents::empty());
     let handler = Handler::new(cfg);
+    // todo: move thread spawn here if possible
 
     // Build our client.
     let mut client = client

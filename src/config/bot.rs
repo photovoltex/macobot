@@ -1,29 +1,14 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+use crate::instance::Instance;
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all(deserialize = "kebab-case"))]
 pub struct Config {
     pub bot_token: String,
     #[serde(flatten)]
     pub instances: HashMap<String, Instance>,
-}
-
-impl Config {
-    pub fn from_path(path: &str) -> Config {
-        confy::load_path::<Config>(path).unwrap()
-    }
-}
-
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-#[serde(rename_all(deserialize = "kebab-case"))]
-pub struct Instance {
-    pub cmd_exec_dir: Option<String>,
-    pub cmd_path: String,
-    pub cmd_args: Option<Vec<String>>,
-    pub startup: StartupConfig,
-    pub restrictions: RestrictionConfig,
-    pub slash_commands: HashMap<String, SlashCommandConfig>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -54,4 +39,10 @@ pub struct StdinConfig {
     pub cmd: String,
     // todo: make optional and impl default response
     pub interaction_msg: String,
+}
+
+impl Config {
+    pub fn from_path(path: &str) -> Config {
+        confy::load_path::<Config>(path).unwrap()
+    }
 }
