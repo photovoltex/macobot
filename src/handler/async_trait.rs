@@ -8,12 +8,8 @@ use serenity::{
     prelude::*,
 };
 
-use crate::{
-    handler::handler::ActiveInstance,
-    instance::{InstanceInEvents, InstanceRunner},
-};
-
-use super::handler::Handler;
+use super::{ActiveInstance, Handler};
+use crate::instance::{InstanceInEvents, InstanceRunner};
 
 #[async_trait]
 impl EventHandler for Handler {

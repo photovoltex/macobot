@@ -17,7 +17,7 @@ use tokio::{
 };
 
 use crate::config::bot::{RestrictionConfig, SlashCommandConfig, StartupConfig};
-use crate::handler::handler::HandlerEvents;
+use crate::handler::HandlerEvents;
 
 // todo: separate Instance config struct and struct here... shouldn't be the same
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

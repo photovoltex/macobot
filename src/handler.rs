@@ -1,3 +1,5 @@
+mod async_trait;
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
